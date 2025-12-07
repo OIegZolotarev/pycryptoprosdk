@@ -13,24 +13,17 @@ libpycades = Extension(
         'pycryptoprosdk/libpycades.cpp',
     ],
     include_dirs=[
-        '/opt/cprocsp/include',
-        '/opt/cprocsp/include/cpcsp',
-        '/opt/cprocsp/include/pki',
+        'C:/Program Files (x86)/Crypto Pro/SDK/include'
     ],
+    library_dirs = [ 'C:/Program Files (x86)/Crypto Pro/SDK/lib' ],
     define_macros=[
-        ('UNIX', '1'),
+        ('WINDOWS', '1'),
         ('HAVE_LIMITS_H', '1'),
         ('HAVE_STDINT_H', '1'),
         ('SIZEOF_VOID_P', '8'),
     ],
     language='c++',
-    extra_link_args=[
-        '-L/opt/cprocsp/lib/amd64',
-        '-lcapi20',
-        '-lcapi10',
-        '-lcades',
-        '-lrdrsup',
-    ]
+    extra_compile_args = ["/MT"]
 )
 
 
