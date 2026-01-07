@@ -11,6 +11,7 @@ libpycades = Extension(
     name='pycryptoprosdk.libpycades',
     sources=[
         'pycryptoprosdk/libpycades.cpp',
+        'pycryptoprosdk/strings_helper.cpp',
     ],
     include_dirs=[
         'C:/Program Files (x86)/Crypto Pro/SDK/include'

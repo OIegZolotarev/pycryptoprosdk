@@ -26,24 +26,26 @@
 #define MY_ENCODING_TYPE (PKCS_7_ASN_ENCODING | X509_ASN_ENCODING)
 #define CERT_NAME_STR_TYPE (CERT_X500_NAME_STR | CERT_NAME_STR_CRLF_FLAG)
 
+#include "strings_helper.h"
+
 static PyObject* CertDoesNotExist = NULL;
 
 // start helpers -------------------------------------------------------------------------------------------------------
 
-ALG_ID GetAlgId(const wchar_t* algString) {
+ALG_ID GetAlgId(const char* algString) {
 	if (!algString) {
 		return 0;
 	}
 
-	std::wstring str(algString);
+	std::string str(algString);
 
-	if (L"CALG_GR3411" == str)
+	if ("CALG_GR3411" == str)
 		return CALG_GR3411;
 
-	if (L"CALG_GR3411_2012_256" == str)
+	if ("CALG_GR3411_2012_256" == str)
 		return CALG_GR3411_2012_256;
 
-	if (L"CALG_GR3411_2012_512" == str)
+	if ("CALG_GR3411_2012_512" == str)
 		return CALG_GR3411_2012_512;
 
 	return 0;
@@ -101,9 +103,9 @@ PyObject* GetThumbprint(PCCERT_CONTEXT pCertContext) {
 	CryptBinaryToStringW(hash.data(), dataSize, CRYPT_STRING_HEX, NULL, &hashStringSize);
 
 	std::vector<wchar_t> thumbprint(hashStringSize);
-	CryptBinaryToStringW(hash.data(), dataSize, CRYPT_STRING_HEX, thumbprint.data(), &hashStringSize);
+	CryptBinaryToStringW(hash.data(), dataSize, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, thumbprint.data(), &hashStringSize);
 
-	return PyUnicode_FromWideChar(thumbprint.data(), hashStringSize - 1);
+	return PyUnicode_FromWideChar(thumbprint.data(), hashStringSize);
 }
 
 PyObject * GetCertAltName(PCCERT_CONTEXT pCertContext) {
@@ -178,6 +180,14 @@ PyObject * GetCertInfo(PCCERT_CONTEXT pCertContext) {
     PyDict_SetItemString(certInfo, "thumbprint", GetThumbprint(pCertContext));
     PyDict_SetItemString(certInfo, "altName", GetCertAltName(pCertContext));
 
+
+    PyObject* der_data = PyBytes_FromStringAndSize(
+        (const char*)pCertContext->pbCertEncoded,
+        pCertContext->cbCertEncoded
+    );
+    PyDict_SetItemString(certInfo, "der_data", der_data);
+    Py_DECREF(der_data);  // PyDict_SetItemString СѓРІРµР»РёС‡РёРІР°РµС‚ refcount
+
     return certInfo;
 }
 
@@ -186,10 +196,12 @@ PyObject * GetCertInfo(PCCERT_CONTEXT pCertContext) {
 static PyObject* CreateHash(PyObject* self, PyObject* args) {
 	const char* message;
 	Py_ssize_t length;
-	wchar_t* algString = nullptr;
+	char* algString = nullptr;
 
-	if (!PyArg_ParseTuple(args, "y#U", &message, &length, &algString))
+	if (!PyArg_ParseTuple(args, "y#s", &message, &length, &algString))
 		return NULL;
+
+	
 
 	HCRYPTPROV hProv;
 	HCRYPTHASH hHash = 0;
@@ -286,32 +298,14 @@ std::vector<wchar_t> utf8ToWide(wchar_t * src) {
 }
 
 static PyObject* GetCertBySubject(PyObject* self, PyObject* args) {
-	wchar_t* _storeName = nullptr;
-	wchar_t* _subject = nullptr;
+	char* _storeName = nullptr;
+	char* _subject = nullptr;
 
 	if (!PyArg_ParseTuple(args, "ss", &_storeName, &_subject))
 		return NULL;
 
-	auto sName = utf8ToWide(_storeName);
-	auto sSubject = utf8ToWide(_subject);
-
-	wchar_t* storeName = sName.data();
-	wchar_t* subject = sSubject.data();
-	
-
-	// Включить поддержку UTF-16 в stdout
-	//printf("storeName: ");
-
-	//for (int i = 0; i < 16; i++)
-	//{
-	//	printf("0x%0.2X ", storeName[i]);
-	//}
-	//
-
-	_setmode(_fileno(stdout), _O_U16TEXT);
-	wprintf(L"storeName: %ls\n", storeName);
-	wprintf(L"subject: %ls\n", subject);
-	fflush(stdout);
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
+	wchar_t* subject = stringConverter.convertFromUTF8(_subject);
 
 	HCERTSTORE hStoreHandle;
 	PCCERT_CONTEXT pCertContext = NULL;
@@ -334,16 +328,19 @@ static PyObject* GetCertBySubject(PyObject* self, PyObject* args) {
 }
 
 static PyObject* GetCertByThumbprint(PyObject* self, PyObject* args) {
-	wchar_t* storeName = nullptr;
-	wchar_t* thumbprint = nullptr;
+	char* _storeName = nullptr;
+	char* _thumbprint = nullptr;
 
-	if (!PyArg_ParseTuple(args, "UU", &storeName, &thumbprint))
+	if (!PyArg_ParseTuple(args, "ss", &_storeName, &_thumbprint))
 		return NULL;
+
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
+	wchar_t* thumbprint = stringConverter.convertFromUTF8(_thumbprint);
 
 	HCERTSTORE hStoreHandle;
 	PCCERT_CONTEXT pCertContext = NULL;
 
-	BYTE pDest[64]; // увеличено под ГОСТ (макс. 64 байта для 512-битного хэша)
+	BYTE pDest[64]; // пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅ. 64 пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ 512-пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ)
 	DWORD nOutLen = sizeof(pDest);
 
 	if (!CryptStringToBinaryW(thumbprint, (DWORD)wcslen(thumbprint), CRYPT_STRING_HEX, pDest, &nOutLen, 0, 0)) {
@@ -376,7 +373,7 @@ static PyObject* GetSignerCertFromSignature(PyObject* self, PyObject* args) {
 	const char* signature;
 	Py_ssize_t signatureLength;
 
-	if (!PyArg_ParseTuple(args, "y#", &signature, &signatureLength))
+	if (!PyArg_ParseTuple(args, "s#", &signature, &signatureLength))
 		return NULL;
 
 	BYTE* pDecodedSignContent = (BYTE*)signature;
@@ -443,12 +440,14 @@ static PyObject* GetSignerCertFromSignature(PyObject* self, PyObject* args) {
 }
 
 static PyObject* InstallCertificate(PyObject* self, PyObject* args) {
-	wchar_t* storeName = nullptr;
+	char* _storeName = nullptr;
 	const char* certData;
 	Py_ssize_t certDataLength;
 
-	if (!PyArg_ParseTuple(args, "Uy#", &storeName, &certData, &certDataLength))
+	if (!PyArg_ParseTuple(args, "sy#", &_storeName, &certData, &certDataLength))
 		return NULL;
+
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
 
 	BYTE* pDecodedCertData = (BYTE*)certData;
 	PCCERT_CONTEXT pCertContext;
@@ -483,11 +482,14 @@ static PyObject* InstallCertificate(PyObject* self, PyObject* args) {
 }
 
 static PyObject* DeleteCertificate(PyObject* self, PyObject* args) {
-	wchar_t* storeName = nullptr;
-	wchar_t* thumbprint = nullptr;
+	char* _storeName = nullptr;
+	char* _thumbprint = nullptr;
 
-	if (!PyArg_ParseTuple(args, "UU", &storeName, &thumbprint))
+	if (!PyArg_ParseTuple(args, "ss", &_storeName, &_thumbprint))
 		return NULL;
+
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
+	wchar_t* thumbprint = stringConverter.convertFromUTF8(_thumbprint);
 
 	HCERTSTORE hStore;
 	PCCERT_CONTEXT pCertContext = NULL;
@@ -647,12 +649,15 @@ static PyObject * VerifyDetached(PyObject *self, PyObject *args)
 static PyObject* Sign(PyObject* self, PyObject* args) {
 	const char* message;
 	Py_ssize_t length;
-	wchar_t* thumbprint = nullptr;
-	wchar_t* storeName = nullptr;
+	char* _thumbprint = nullptr;
+	char* _storeName = nullptr;
 	int detached;
 
-	if (!PyArg_ParseTuple(args, "y#UUi", &message, &length, &thumbprint, &storeName, &detached))
+	if (!PyArg_ParseTuple(args, "y#ssi", &message, &length, &_thumbprint, &_storeName, &detached))
 		return NULL;
+
+	wchar_t* thumbprint = stringConverter.convertFromUTF8(_thumbprint);
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
 
 	HCERTSTORE hStoreHandle;
 	PCCERT_CONTEXT pCertContext = NULL;
@@ -733,8 +738,50 @@ static PyObject* Sign(PyObject* self, PyObject* args) {
 	return PyUnicode_FromWideChar(base64SignValue.data(), base64SignSize - 1);
 }
 
+
+static PyObject* EnumerateStore(PyObject* self, PyObject* args)
+{
+	char* _storeName = nullptr;
+
+	if (!PyArg_ParseTuple(args, "s", &_storeName))
+		return NULL;
+
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
+	
+	HCERTSTORE hStoreHandle = CertOpenSystemStoreW(0, storeName);
+	PCCERT_CONTEXT  pCertContext = NULL;
+
+	if (!hStoreHandle) {		
+		PyErr_SetString(PyExc_Exception, "CertOpenStore failed.");
+		return NULL;
+	}
+
+	PyObject* res = PyList_New(0);
+
+
+
+	while (pCertContext = CertEnumCertificatesInStore(hStoreHandle,pCertContext)) 
+	{
+		auto info = GetCertInfo(pCertContext);
+		PyList_Append(res, info);
+	} 
+
+	if (!CertCloseStore(hStoreHandle,0))
+	{
+		Py_DECREF(res);
+		PyErr_SetString(PyExc_Exception, "CertCloseStore failed.");
+		return NULL;
+	}
+
+
+	
+
+	return res;
+}
+
 static PyMethodDef Methods[] = {
     {"create_hash", CreateHash, METH_VARARGS},
+	{"enumerate_store", EnumerateStore, METH_VARARGS},
     {"get_cert_by_subject", GetCertBySubject, METH_VARARGS},
     {"get_cert_by_thumbprint", GetCertByThumbprint, METH_VARARGS},
     {"get_signer_cert_from_signature", GetSignerCertFromSignature, METH_VARARGS},

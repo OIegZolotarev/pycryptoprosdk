@@ -107,6 +107,17 @@ class CryptoProSDK:
             message = b64decode(message)
         return message
 
+    def enumerate_store(self, store_name):
+
+        store_items = libpycades.enumerate_store(store_name)
+
+        res = []
+
+        for item in store_items:
+            res.append(CertInfo(item))
+
+        return res
+
 
 class CertName:
     def __init__(self, cert_name_string):
