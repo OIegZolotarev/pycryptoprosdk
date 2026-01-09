@@ -20,7 +20,7 @@ StringsConverter::~StringsConverter()
 wchar_t* StringsConverter::convertFromUTF8(const char* multiByteString)
 {
 	int slot = poolIndex % POOL_SIZE;
-	wchar_t* result = pool[poolIndex];
+	wchar_t* result = pool[slot];
 
 	// Determine the required buffer size for the wide-character string
 	// Pass NULL for lpWideCharStr and 0 for cchWideChar to get the required size

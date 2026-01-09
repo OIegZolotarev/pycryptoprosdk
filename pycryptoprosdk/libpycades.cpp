@@ -91,7 +91,6 @@ PyObject* GetCertName(CERT_NAME_BLOB name) {
 	return PyUnicode_FromWideChar(subject.data(), cbSize - 1);
 }
 
-
 PyObject* GetThumbprint(PCCERT_CONTEXT pCertContext) {
 	DWORD dataSize;
 	CertGetCertificateContextProperty(pCertContext, CERT_HASH_PROP_ID, NULL, &dataSize);
@@ -167,26 +166,43 @@ PyObject * GetCertAltName(PCCERT_CONTEXT pCertContext) {
         LocalFree(pvStructInfo);
     }
 
+	Py_INCREF(Py_None);
     return Py_None;
 }
 
 PyObject * GetCertInfo(PCCERT_CONTEXT pCertContext) {
-    PyObject * certInfo = PyDict_New();
+	PyObject* certInfo = PyDict_New();
 
-    PyDict_SetItemString(certInfo, "subject", GetCertName(pCertContext->pCertInfo->Subject));
-    PyDict_SetItemString(certInfo, "issuer", GetCertName(pCertContext->pCertInfo->Issuer));
-    PyDict_SetItemString(certInfo, "notValidBefore", FileTimeToPyDateTime(&pCertContext->pCertInfo->NotBefore));
-    PyDict_SetItemString(certInfo, "notValidAfter", FileTimeToPyDateTime(&pCertContext->pCertInfo->NotAfter));
-    PyDict_SetItemString(certInfo, "thumbprint", GetThumbprint(pCertContext));
-    PyDict_SetItemString(certInfo, "altName", GetCertAltName(pCertContext));
+	PyObject* subject = GetCertName(pCertContext->pCertInfo->Subject);
+	PyDict_SetItemString(certInfo, "subject", subject);
+	Py_DECREF(subject);
 
+	PyObject* issuer = GetCertName(pCertContext->pCertInfo->Issuer);
+	PyDict_SetItemString(certInfo, "issuer", issuer);
+	Py_DECREF(issuer);
 
-    PyObject* der_data = PyBytes_FromStringAndSize(
-        (const char*)pCertContext->pbCertEncoded,
-        pCertContext->cbCertEncoded
-    );
-    PyDict_SetItemString(certInfo, "der_data", der_data);
-    Py_DECREF(der_data);  // PyDict_SetItemString увеличивает refcount
+	PyObject* notBefore = FileTimeToPyDateTime(&pCertContext->pCertInfo->NotBefore);
+	PyDict_SetItemString(certInfo, "notValidBefore", notBefore);
+	Py_DECREF(notBefore);
+
+	PyObject* notAfter = FileTimeToPyDateTime(&pCertContext->pCertInfo->NotAfter);
+	PyDict_SetItemString(certInfo, "notValidAfter", notAfter);
+	Py_DECREF(notAfter);
+
+	PyObject* thumbprint = GetThumbprint(pCertContext);
+	PyDict_SetItemString(certInfo, "thumbprint", thumbprint);
+	Py_DECREF(thumbprint);
+
+	PyObject* altName = GetCertAltName(pCertContext);
+	PyDict_SetItemString(certInfo, "altName", altName);
+	Py_DECREF(altName);
+
+	PyObject* der_data = PyBytes_FromStringAndSize(
+		(const char*)pCertContext->pbCertEncoded,
+		pCertContext->cbCertEncoded
+	);
+	PyDict_SetItemString(certInfo, "der_data", der_data);
+	Py_DECREF(der_data);
 
     return certInfo;
 }
