@@ -18,6 +18,7 @@
 #include <iostream>  // For console output
 
 
+#pragma comment(lib, "ncrypt.lib")
 #pragma comment(lib, "Crypt32.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "amd64/cades.lib")
@@ -754,6 +755,241 @@ static PyObject* Sign(PyObject* self, PyObject* args) {
 	return PyUnicode_FromWideChar(base64SignValue.data(), base64SignSize - 1);
 }
 
+static PyObject* SignHash(PyObject* self, PyObject* args) {
+	const char* hash_data;
+	Py_ssize_t hash_len;
+	char* _thumbprint = nullptr;
+	char* _storeName = nullptr;
+
+	if (!PyArg_ParseTuple(args, "y#ss", &hash_data, &hash_len, &_thumbprint, &_storeName))
+		return NULL;
+
+	wchar_t* thumbprint = stringConverter.convertFromUTF8(_thumbprint);
+	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
+
+	HCERTSTORE hStore = NULL;
+	PCCERT_CONTEXT pCertContext = NULL;
+
+	// --- thumbprint hex -> binary
+	BYTE thumbBin[64];
+	DWORD thumbBinLen = sizeof(thumbBin);
+
+	if (!CryptStringToBinaryW(
+		thumbprint,
+		(DWORD)wcslen(thumbprint),
+		CRYPT_STRING_HEX,
+		thumbBin,
+		&thumbBinLen,
+		NULL,
+		NULL
+	)) {
+		PyErr_Format(PyExc_ValueError,
+			"CryptStringToBinaryW failed (0x%x)", GetLastError());
+		return NULL;
+	}
+
+	CRYPT_HASH_BLOB hashBlob;
+	hashBlob.pbData = thumbBin;
+	hashBlob.cbData = thumbBinLen;
+
+	// --- open store & find cert
+	hStore = CertOpenSystemStoreW(NULL, storeName);
+	if (!hStore) {
+		PyErr_Format(PyExc_ValueError,
+			"CertOpenSystemStoreW failed (0x%x)", GetLastError());
+		return NULL;
+	}
+
+	pCertContext = CertFindCertificateInStore(
+		hStore,
+		MY_ENCODING_TYPE,
+		0,
+		CERT_FIND_HASH,
+		&hashBlob,
+		NULL
+	);
+
+	if (!pCertContext) {
+		CertCloseStore(hStore, 0);
+		PyErr_Format(PyExc_ValueError,
+			"CertFindCertificateInStore failed (0x%x)", GetLastError());
+		return NULL;
+	}
+
+	// --- acquire private key
+	HCRYPTPROV_OR_NCRYPT_KEY_HANDLE hKey = 0;
+	DWORD dwKeySpec = 0;
+	BOOL bFreeKey = FALSE;
+
+	if (!CryptAcquireCertificatePrivateKey(
+		pCertContext,
+		CRYPT_ACQUIRE_SILENT_FLAG,
+		NULL,
+		&hKey,
+		&dwKeySpec,
+		&bFreeKey
+	)) {
+		CertFreeCertificateContext(pCertContext);
+		CertCloseStore(hStore, 0);
+		PyErr_Format(PyExc_ValueError,
+			"CryptAcquireCertificatePrivateKey failed (0x%x)", GetLastError());
+		return NULL;
+	}
+
+	std::vector<BYTE> signature;
+	DWORD sigLen = 0;
+
+	// ============================================================
+	// ======================= CNG PATH ===========================
+	// ============================================================
+	if (dwKeySpec == CERT_NCRYPT_KEY_SPEC) {
+
+		NCRYPT_KEY_HANDLE hNKey = (NCRYPT_KEY_HANDLE)hKey;
+
+		SECURITY_STATUS status = NCryptSignHash(
+			hNKey,
+			NULL,
+			(PBYTE)hash_data,
+			(DWORD)hash_len,
+			NULL,
+			0,
+			&sigLen,
+			0
+		);
+
+		if (status != ERROR_SUCCESS) {
+			if (bFreeKey) NCryptFreeObject(hNKey);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_Format(PyExc_Exception,
+				"NCryptSignHash(size) failed (0x%x)", status);
+			return NULL;
+		}
+
+		signature.resize(sigLen);
+
+		status = NCryptSignHash(
+			hNKey,
+			NULL,
+			(PBYTE)hash_data,
+			(DWORD)hash_len,
+			signature.data(),
+			sigLen,
+			&sigLen,
+			0
+		);
+
+		if (status != ERROR_SUCCESS) {
+			if (bFreeKey) NCryptFreeObject(hNKey);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_Format(PyExc_Exception,
+				"NCryptSignHash failed (0x%x)", status);
+			return NULL;
+		}
+	}
+	// ============================================================
+	// ======================= CSP PATH ===========================
+	// ============================================================
+	else {
+		ALG_ID algId = 0;
+		const char* oid =
+			pCertContext->pCertInfo->SubjectPublicKeyInfo.Algorithm.pszObjId;
+
+		if (strcmp(oid, szOID_CP_GOST_R3410EL) == 0)
+			algId = CALG_GR3411;
+		else if (strcmp(oid, szOID_CP_GOST_R3410_12_256) == 0)
+			algId = CALG_GR3411_2012_256;
+		else if (strcmp(oid, szOID_CP_GOST_R3410_12_512) == 0)
+			algId = CALG_GR3411_2012_512;
+
+		if (!algId) {
+			if (bFreeKey) CryptReleaseContext(hKey, 0);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_SetString(PyExc_ValueError, "Unsupported CSP algorithm");
+			return NULL;
+		}
+
+		HCRYPTHASH hHash = 0;
+
+		if (!CryptCreateHash(
+			(HCRYPTPROV)hKey,
+			algId,
+			0,
+			0,
+			&hHash
+		)) {
+			if (bFreeKey) CryptReleaseContext(hKey, 0);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_Format(PyExc_Exception,
+				"CryptCreateHash failed (0x%x)", GetLastError());
+			return NULL;
+		}
+
+		if (!CryptSetHashParam(
+			hHash,
+			HP_HASHVAL,
+			(BYTE*)hash_data,
+			0
+		)) {
+			CryptDestroyHash(hHash);
+			if (bFreeKey) CryptReleaseContext(hKey, 0);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_Format(PyExc_Exception,
+				"CryptSetHashParam failed (0x%x)", GetLastError());
+			return NULL;
+		}
+
+		CryptSignHash(
+			hHash,
+			dwKeySpec,
+			NULL,
+			0,
+			NULL,
+			&sigLen
+		);
+
+		signature.resize(sigLen);
+
+		if (!CryptSignHash(
+			hHash,
+			dwKeySpec,
+			NULL,
+			0,
+			signature.data(),
+			&sigLen
+		)) {
+			CryptDestroyHash(hHash);
+			if (bFreeKey) CryptReleaseContext(hKey, 0);
+			CertFreeCertificateContext(pCertContext);
+			CertCloseStore(hStore, 0);
+			PyErr_Format(PyExc_Exception,
+				"CryptSignHash failed (0x%x)", GetLastError());
+			return NULL;
+		}
+
+		CryptDestroyHash(hHash);
+	}
+
+	// --- cleanup
+	if (bFreeKey) {
+		if (dwKeySpec == CERT_NCRYPT_KEY_SPEC)
+			NCryptFreeObject(hKey);
+		else
+			CryptReleaseContext(hKey, 0);
+	}
+
+	CertFreeCertificateContext(pCertContext);
+	CertCloseStore(hStore, 0);
+
+	return PyBytes_FromStringAndSize(
+		(char*)signature.data(),
+		sigLen
+	);
+}
 
 static PyObject* EnumerateStore(PyObject* self, PyObject* args)
 {
@@ -806,6 +1042,7 @@ static PyMethodDef Methods[] = {
     {"verify", Verify, METH_VARARGS},
     {"verify_detached", VerifyDetached, METH_VARARGS},
     {"sign", Sign, METH_VARARGS},
+	{"sign_hash", SignHash, METH_VARARGS},
     {NULL, NULL, 0, NULL}
 };
 
