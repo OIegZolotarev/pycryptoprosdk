@@ -15,10 +15,14 @@ class CryptoProSDK:
         message = self._prepare_message(message)
         return libpycades.sign(message, thumbprint, store, detached)
 
-    def sign_hash(self, message, thumbprint, store='MY'):
+    def sign_hash(self, message, thumbprint, store='MY', fmt='der'):
 
         message = self._prepare_message(message)
-        return libpycades.sign_hash(message, thumbprint, store)
+        return libpycades.sign_hash(message, thumbprint, store, fmt)
+        
+    def verify_hash(self, message, signature, thumbprint, store='MY'):
+        
+        return libpycades.verify_hash(message, signature, thumbprint, store)
 
     def verify(self, signature):
         """Верифицирует присоединенную подпись.

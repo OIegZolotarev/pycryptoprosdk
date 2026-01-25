@@ -7,7 +7,9 @@
       "name": "x64-Release",
       "includePath": [
         "${env.INCLUDE}",
-        "${workspaceRoot}\\**"
+        "${workspaceRoot}\\**",
+        "C:/Program Files/Python314/Include",
+        "C:/Program Files (x86)/Crypto Pro/SDK/include"
       ],
       "defines": [
         "WIN32",

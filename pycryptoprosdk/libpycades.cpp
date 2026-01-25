@@ -13,10 +13,12 @@
 #include <cades.h>
 
 #include <vector>
+#include <algorithm>
 
 #include <windows.h> // Required for MultiByteToWideChar
 #include <iostream>  // For console output
 
+#include "utils.h"
 
 #pragma comment(lib, "ncrypt.lib")
 #pragma comment(lib, "Crypt32.lib")
@@ -24,14 +26,58 @@
 #pragma comment(lib, "amd64/cades.lib")
 
 
-#define MY_ENCODING_TYPE (PKCS_7_ASN_ENCODING | X509_ASN_ENCODING)
+
 #define CERT_NAME_STR_TYPE (CERT_X500_NAME_STR | CERT_NAME_STR_CRLF_FLAG)
 
 #include "strings_helper.h"
 
-static PyObject* CertDoesNotExist = NULL;
+PyObject* CertDoesNotExist = NULL;
 
 // start helpers -------------------------------------------------------------------------------------------------------
+
+
+
+static std::vector<BYTE> raw_to_der_gost256(const BYTE* raw_sig) {
+	
+	
+
+	auto encodeInteger = [](const uint8_t* data, size_t len) -> std::vector<uint8_t> {
+		std::vector<uint8_t> out;
+		out.push_back(0x02); // INTEGER tag
+
+		size_t val_len = len;
+		if (data[0] & 0x80) {
+			// нужно добавить leading zero
+			out.push_back(static_cast<uint8_t>(len + 1));
+			out.push_back(0x00);
+			out.insert(out.end(), data, data + len);
+		}
+		else {
+			out.push_back(static_cast<uint8_t>(len));
+			out.insert(out.end(), data, data + len);
+		}
+		return out;
+		};
+
+	auto r_enc = encodeInteger(raw_sig, 32);
+	auto s_enc = encodeInteger(raw_sig + 32, 32);
+
+	size_t total_len = r_enc.size() + s_enc.size();
+	std::vector<uint8_t> der;
+	der.push_back(0x30); // SEQUENCE
+	if (total_len < 128) {
+		der.push_back(static_cast<uint8_t>(total_len));
+	}
+	else {
+		// Для ГОСТ-256 total_len <= 68, так что этого не будет
+		// Но для полноты: multi-byte length encoding при total_len >= 128
+	}
+	der.insert(der.end(), r_enc.begin(), r_enc.end());
+	der.insert(der.end(), s_enc.begin(), s_enc.end());
+
+	return der;
+}
+
 
 ALG_ID GetAlgId(const char* algString) {
 	if (!algString) {
@@ -262,15 +308,15 @@ static PyObject* CreateHash(PyObject* self, PyObject* args) {
 	}
 
 	DWORD hashStringSize;
-	CryptBinaryToStringW(rgbHash, cbHash, CRYPT_STRING_HEX, NULL, &hashStringSize);
+	CryptBinaryToStringW(rgbHash, cbHash, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, &hashStringSize);
 
 	std::vector<wchar_t> hashString(hashStringSize);
-	CryptBinaryToStringW(rgbHash, cbHash, CRYPT_STRING_HEX, hashString.data(), &hashStringSize);
+	CryptBinaryToStringW(rgbHash, cbHash, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, hashString.data(), &hashStringSize);
 
 	CryptDestroyHash(hHash);
 	CryptReleaseContext(hProv, 0);
 
-	return PyUnicode_FromWideChar(hashString.data(), hashStringSize - 1);
+	return PyUnicode_FromWideChar(hashString.data(), hashStringSize);
 }
 
 std::vector<wchar_t> utf8ToWide(wchar_t * src) {
@@ -575,7 +621,7 @@ static PyObject * Verify(PyObject *self, PyObject *args) {
     PCADES_VERIFICATION_INFO pVerifyInfo;
     PCRYPT_DATA_BLOB pContent = 0;
 
-    if (!CadesVerifyMessage(&verifyPara, 0, pbSignature, signatureLength, &pContent, &pVerifyInfo)) {
+    if (!CadesVerifyMessage(&verifyPara, 0, pbSignature, (DWORD)signatureLength, &pContent, &pVerifyInfo)) {
         PyDict_SetItemString(res, "error", PyUnicode_FromFormat("0x%x", GetLastError()));
     }
 
@@ -631,7 +677,7 @@ static PyObject * VerifyDetached(PyObject *self, PyObject *args)
     BYTE *pbToBeSigned = (BYTE*)message;
 
     MessageArray[0] = pbToBeSigned;
-    MessageSizeArray[0] = messageLength;
+    MessageSizeArray[0] = (DWORD)messageLength;
 
     CRYPT_VERIFY_MESSAGE_PARA cryptVerifyPara = { sizeof(cryptVerifyPara) };
     cryptVerifyPara.dwMsgAndCertEncodingType = MY_ENCODING_TYPE;
@@ -648,7 +694,7 @@ static PyObject * VerifyDetached(PyObject *self, PyObject *args)
 
     BYTE *pbSignature = (BYTE*)signature;
 
-    if (!CadesVerifyDetachedMessage(&verifyPara, 0, pbSignature, signatureLength, 1, MessageArray, MessageSizeArray, &pVerifyInfo)) {
+    if (!CadesVerifyDetachedMessage(&verifyPara, 0, pbSignature, (DWORD)signatureLength, 1, MessageArray, MessageSizeArray, &pVerifyInfo)) {
         PyDict_SetItemString(res, "error", PyUnicode_FromFormat("0x%x", GetLastError()));
     }
 
@@ -755,14 +801,82 @@ static PyObject* Sign(PyObject* self, PyObject* args) {
 	return PyUnicode_FromWideChar(base64SignValue.data(), base64SignSize - 1);
 }
 
+static PyObject* VerifyHash(PyObject* self, PyObject* args)
+{
+
+	const char* hash_data;
+	Py_ssize_t hash_len;
+
+	const char* sign_data;
+	Py_ssize_t sign_len;
+	char* _thumbprint = nullptr;
+	char* _storeName = nullptr;
+
+	if (!PyArg_ParseTuple(args, "y#y#ss", &hash_data, &hash_len, &sign_data, &sign_len, &_thumbprint, &_storeName))
+		return NULL;
+
+	DebugData("VerifyHash() hash_data", hash_data, hash_len);
+
+	auto certificateData = GetCertificateData(_storeName, _thumbprint);
+
+	if (!certificateData)	
+		return NULL;
+	
+	auto keyContext = GetPrivateKeyContext(certificateData);
+
+	if (!keyContext)
+	{
+		ReleaseCertificateData(certificateData);
+		return NULL;
+	}
+
+	BOOL isValid = false;
+
+	if (!keyContext->bIsCNG)
+	{
+		printf("Doing CryptAPI check...\n");
+		HCRYPTHASH hHash = 0;
+		auto algId = certificateData->getAlgId();
+
+		//Проверяем ЭЦП
+		CryptCreateHash((HCRYPTPROV)keyContext->hKey, algId, 0, 0, &hHash);
+		CryptHashData(hHash, (BYTE*)hash_data, (DWORD)hash_len, 0);
+
+		HCRYPTKEY k;
+
+		CryptImportPublicKeyInfo((HCRYPTPROV)keyContext->hKey, 
+			X509_ASN_ENCODING, 
+			certificateData->PublicKeyInfo(), 
+			&k);
+		isValid = CryptVerifySignature(hHash, (const BYTE*)sign_data, (DWORD)sign_len, k, NULL, 0);
+	}
+
+
+	printf("CryptVerifySignature=%d\n", isValid);
+
+	
+	ReleasePrivateKeyContext(keyContext);
+	ReleaseCertificateData(certificateData);
+
+	if (isValid)
+		return Py_True;
+	else
+		return Py_False;
+}
+
 static PyObject* SignHash(PyObject* self, PyObject* args) {
 	const char* hash_data;
 	Py_ssize_t hash_len;
 	char* _thumbprint = nullptr;
 	char* _storeName = nullptr;
+	const char* output_format;
 
-	if (!PyArg_ParseTuple(args, "y#ss", &hash_data, &hash_len, &_thumbprint, &_storeName))
+	if (!PyArg_ParseTuple(args, "y#sss", &hash_data, &hash_len, &_thumbprint, &_storeName, &output_format))
 		return NULL;
+
+	DebugData("SignHash() hash_data", hash_data, hash_len);
+
+	bool wantDer = (_stricmp(output_format, "der") == 0);
 
 	wchar_t* thumbprint = stringConverter.convertFromUTF8(_thumbprint);
 	wchar_t* storeName = stringConverter.convertFromUTF8(_storeName);
@@ -836,6 +950,8 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 		return NULL;
 	}
 
+	
+
 	std::vector<BYTE> signature;
 	DWORD sigLen = 0;
 
@@ -878,6 +994,17 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 			&sigLen,
 			0
 		);
+
+		BOOL verified = FALSE;
+		status = NCryptVerifySignature(
+			hNKey,
+			NULL, // padding info — для ГОСТ должен быть NULL			
+			(PBYTE)hash_data, (DWORD)hash_len,
+			signature.data(), (DWORD)signature.size(),
+			0
+		);
+
+		printf("Verified=%d\n", verified);
 
 		if (status != ERROR_SUCCESS) {
 			if (bFreeKey) NCryptFreeObject(hNKey);
@@ -928,20 +1055,24 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 			return NULL;
 		}
 
-		if (!CryptSetHashParam(
-			hHash,
-			HP_HASHVAL,
-			(BYTE*)hash_data,
-			0
-		)) {
-			CryptDestroyHash(hHash);
-			if (bFreeKey) CryptReleaseContext(hKey, 0);
-			CertFreeCertificateContext(pCertContext);
-			CertCloseStore(hStore, 0);
-			PyErr_Format(PyExc_Exception,
-				"CryptSetHashParam failed (0x%x)", GetLastError());
-			return NULL;
-		}
+		
+
+		//if (!CryptSetHashParam(
+		//	hHash,
+		//	HP_HASHVAL,
+		//	(BYTE*)hash_data,
+		//	0
+		//)) {
+		//	CryptDestroyHash(hHash);
+		//	if (bFreeKey) CryptReleaseContext(hKey, 0);
+		//	CertFreeCertificateContext(pCertContext);
+		//	CertCloseStore(hStore, 0);
+		//	PyErr_Format(PyExc_Exception,
+		//		"CryptSetHashParam failed (0x%x)", GetLastError());
+		//	return NULL;
+		//}
+
+		CryptHashData(hHash, (BYTE*)hash_data,	(DWORD)hash_len, 0);
 
 		CryptSignHash(
 			hHash,
@@ -951,6 +1082,8 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 			NULL,
 			&sigLen
 		);
+
+		
 
 		signature.resize(sigLen);
 
@@ -971,7 +1104,29 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 			return NULL;
 		}
 
+
+		
+ 	//	if (sigLen == 64) {
+ 	//		// Инвертируем байты в r (первые 32 байта)
+ 	//		std::reverse(signature.begin(), signature.begin() + 32);
+ 	//		// Инвертируем байты в s (вторые 32 байта)
+ 	//		std::reverse(signature.begin() + 32, signature.end());
+		//}
+
 		CryptDestroyHash(hHash);
+		
+
+		//Проверяем ЭЦП
+		CryptCreateHash((HCRYPTPROV)hKey, algId, 0, 0, &hHash);
+		CryptHashData(hHash, (BYTE*)hash_data, (DWORD)hash_len, 0);
+
+		HCRYPTKEY k;
+
+		CryptImportPublicKeyInfo((HCRYPTPROV)hKey, X509_ASN_ENCODING, &pCertContext->pCertInfo->SubjectPublicKeyInfo, &k);
+		BOOL r = CryptVerifySignature(hHash, (const BYTE*)signature.data(), (DWORD)signature.size(), k, NULL, 0);
+
+		printf("CryptVerifySignature=%d\n", r);
+		
 	}
 
 	// --- cleanup
@@ -984,6 +1139,15 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 
 	CertFreeCertificateContext(pCertContext);
 	CertCloseStore(hStore, 0);
+
+	if (wantDer && sigLen == 64) {		
+		std::vector<BYTE> der = raw_to_der_gost256(signature.data());
+		signature.swap(der);
+		sigLen = (DWORD)signature.size();		
+	}
+
+	// Крипто-про разворачивает подпись, целую неделю промучался с этим
+	std::reverse(signature.begin(), signature.end());
 
 	return PyBytes_FromStringAndSize(
 		(char*)signature.data(),
@@ -1043,6 +1207,7 @@ static PyMethodDef Methods[] = {
     {"verify_detached", VerifyDetached, METH_VARARGS},
     {"sign", Sign, METH_VARARGS},
 	{"sign_hash", SignHash, METH_VARARGS},
+	{"verify_hash", VerifyHash, METH_VARARGS},
     {NULL, NULL, 0, NULL}
 };
 

@@ -12,6 +12,7 @@ libpycades = Extension(
     sources=[
         'pycryptoprosdk/libpycades.cpp',
         'pycryptoprosdk/strings_helper.cpp',
+        'pycryptoprosdk/utils.cpp',
     ],
     include_dirs=[
         'C:/Program Files (x86)/Crypto Pro/SDK/include'
@@ -24,13 +25,13 @@ libpycades = Extension(
         ('SIZEOF_VOID_P', '8'),
     ],
     language='c++',
-    extra_compile_args = ["/MT"]
+    extra_compile_args = ["/MT", "/std:c++17"]
 )
 
 
 setup(
     name='pycryptoprosdk',
-    version='1.1.1',
+    version='1.1.2',
     url='https://github.com/OIegZolotarev/pycryptoprosdk.git',
     author='Oleg Zolotarev, based on original work by uishnik',
     author_email='ovzolotarev@gmail.com',
