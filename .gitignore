@@ -4,3 +4,4 @@ build/
 /pycryptoprosdk/.vs
 /pycryptoprosdk/__pycache__
 /pycryptoprosdk.egg-info
+.vs/*

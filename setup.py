@@ -31,7 +31,7 @@ libpycades = Extension(
 
 setup(
     name='pycryptoprosdk',
-    version='1.1.2',
+    version='1.1.3',
     url='https://github.com/OIegZolotarev/pycryptoprosdk.git',
     author='Oleg Zolotarev, based on original work by uishnik',
     author_email='ovzolotarev@gmail.com',

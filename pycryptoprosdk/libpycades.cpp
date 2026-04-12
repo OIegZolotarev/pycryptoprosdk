@@ -815,7 +815,7 @@ static PyObject* VerifyHash(PyObject* self, PyObject* args)
 	if (!PyArg_ParseTuple(args, "y#y#ss", &hash_data, &hash_len, &sign_data, &sign_len, &_thumbprint, &_storeName))
 		return NULL;
 
-	DebugData("VerifyHash() hash_data", hash_data, hash_len);
+	// DebugData("VerifyHash() hash_data", hash_data, hash_len);
 
 	auto certificateData = GetCertificateData(_storeName, _thumbprint);
 
@@ -874,7 +874,7 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 	if (!PyArg_ParseTuple(args, "y#sss", &hash_data, &hash_len, &_thumbprint, &_storeName, &output_format))
 		return NULL;
 
-	DebugData("SignHash() hash_data", hash_data, hash_len);
+	//DebugData("SignHash() hash_data", hash_data, hash_len);
 
 	bool wantDer = (_stricmp(output_format, "der") == 0);
 
@@ -888,6 +888,7 @@ static PyObject* SignHash(PyObject* self, PyObject* args) {
 	BYTE thumbBin[64];
 	DWORD thumbBinLen = sizeof(thumbBin);
 
+	
 	if (!CryptStringToBinaryW(
 		thumbprint,
 		(DWORD)wcslen(thumbprint),
